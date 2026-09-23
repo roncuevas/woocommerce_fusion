@@ -138,10 +138,13 @@ Currently, **Contact** records are not updated when details change. Changes must
 
 ![Sales Order Status Sync](images/so-order-status.png)
 
+## Items required by imported orders
+
+Sales Orders continue to synchronise from WooCommerce to ERPNext. If the WooCommerce Server is configured with **Item Synchronisation Direction** set to **ERPNext to WooCommerce**, every Product in an imported order must already be linked to an ERPNext Item. Unknown Products are not created automatically; synchronisation reports the Product ID and asks you to create or link the Item in ERPNext first.
+
 
 ## Troubleshooting
 - You can look at the list of **WooCommerce Orders** from within ERPNext by opening the **WooCommerce Order** doctype. This is a [Virtual DocType](https://frappeframework.com/docs/v15/user/en/basics/doctypes/virtual-doctype) that interacts directly with your WooCommerce site's API interface
 - Any errors during this process can be found under **Error Log**.
 - You can also check the **Scheduled Job Log** for the `sync_sales_orders.run_sales_orders_sync` Scheduled Job.
 - A history of all API calls made to your Wordpress Site can be found under **WooCommerce Request Log** (*Enable WooCommerce Request Logs* needs to be turned on on **WooCommerce Server** > *Logs*)
-

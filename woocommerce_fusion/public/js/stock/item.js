@@ -120,14 +120,8 @@ frappe.ui.form.on("Item", {
       },
       error: (r) => {
         frappe.dom.unfreeze();
-        frappe.show_alert(
-          {
-            message: __(
-              "There was an error processing the request. See Error Log.",
-            ),
-            indicator: "red",
-          },
-          5,
+        frappe.msgprint(
+          r.message || __("There was an error processing the request."),
         );
       },
     });

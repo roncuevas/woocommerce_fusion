@@ -29,6 +29,9 @@ class WooCommerceServer(Document):
 		self.name = parse_domain_from_url(self.woocommerce_server_url)
 
 	def validate(self):
+		if not self.item_sync_direction:
+			self.item_sync_direction = "Bidirectional"
+
 		# Validate URL
 		result = urlparse(self.woocommerce_server_url)
 		if not all([result.scheme, result.netloc]):

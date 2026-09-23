@@ -5,5 +5,9 @@ class SyncDisabledError(ValidationError):
 	pass
 
 
+class SyncDirectionError(ValidationError):
+	pass
+
+
 class WooCommerceOrderNotFoundError(ValidationError):
 	pass

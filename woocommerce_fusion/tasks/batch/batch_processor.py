@@ -3,7 +3,14 @@ import json
 import frappe
 from frappe.utils import get_datetime, now_datetime
 
-from woocommerce_fusion.tasks.sync_items import ERPNextItemToSync, SynchroniseItem
+from woocommerce_fusion.tasks.sync_items import (
+	ITEM_SYNC_BIDIRECTIONAL,
+	ERPNextItemToSync,
+	SynchroniseItem,
+	get_item_sync_direction,
+	item_sync_allows_inbound,
+	item_sync_allows_outbound,
+)
 from woocommerce_fusion.woocommerce.doctype.woocommerce_order.woocommerce_order import (
 	WooCommerceOrder,
 )
@@ -40,6 +47,11 @@ class BatchProcessor:
 
 		sync_type = rows[0].sync_type
 		direction = rows[0].direction
+		if sync_type == "item":
+			if direction == "outbound" and not item_sync_allows_outbound(self.server):
+				return self._skip_forbidden_item_rows(rows, direction)
+			if direction == "inbound" and not item_sync_allows_inbound(self.server):
+				return self._skip_forbidden_item_rows(rows, direction)
 
 		if sync_type == "order" and direction == "outbound":
 			return self._process_order_chunk(rows, flush_reason)
@@ -136,9 +148,11 @@ class BatchProcessor:
 				# conflict (skip the outbound push) when WooCommerce has changed since our last
 				# sync AND is newer than the ERPNext item. A matching sync hash means the last
 				# WC change was made by us, so it is safe to push the local edits.
-				if wc_date_modified != iws.woocommerce_last_sync_hash and get_datetime(
-					wc_date_modified
-				) > get_datetime(item.modified):
+				if (
+					get_item_sync_direction(self.server) == ITEM_SYNC_BIDIRECTIONAL
+					and wc_date_modified != iws.woocommerce_last_sync_hash
+					and get_datetime(wc_date_modified) > get_datetime(item.modified)
+				):
 					self._mark_completed(
 						row,
 						{"id": int(row.woocommerce_id), "date_modified": wc_date_modified},
@@ -603,6 +617,16 @@ class BatchProcessor:
 	def _mark_all_failed(self, rows: list, error: str, batch_log_name: str | None):
 		for row in rows:
 			self._mark_failed(row.name, error, batch_log_name)
+
+	def _skip_forbidden_item_rows(self, rows: list, direction: str) -> tuple[int, int]:
+		configured = get_item_sync_direction(self.server)
+		for row in rows:
+			self._mark_skipped(
+				row,
+				f"Skipped because Item Synchronisation Direction is {configured}; "
+				f"{direction} Item synchronisation is disabled.",
+			)
+		return len(rows), 0
 
 
 def _expected_wc_type(item) -> str:

@@ -13,7 +13,7 @@ from jsonpath_ng import Child, Fields
 from jsonpath_ng.ext import parse
 from jsonpath_ng.ext.filter import Filter
 
-from woocommerce_fusion.exceptions import SyncDisabledError
+from woocommerce_fusion.exceptions import SyncDirectionError, SyncDisabledError
 from woocommerce_fusion.tasks.field_transforms import (
 	SKIP,
 	TO_ERPNEXT,
@@ -32,6 +32,38 @@ from woocommerce_fusion.woocommerce.woocommerce_api import (
 	generate_woocommerce_record_name_from_domain_and_id,
 )
 
+ITEM_SYNC_BIDIRECTIONAL = "Bidirectional"
+ITEM_SYNC_ERP_NEXT_TO_WOOCOMMERCE = "ERPNext to WooCommerce"
+ITEM_SYNC_WOOCOMMERCE_TO_ERP_NEXT = "WooCommerce to ERPNext"
+
+
+def get_item_sync_direction(server) -> str:
+	"""Return the configured Item direction, preserving legacy empty values as Bidirectional."""
+	return getattr(server, "item_sync_direction", None) or ITEM_SYNC_BIDIRECTIONAL
+
+
+def item_sync_allows_outbound(server) -> bool:
+	return get_item_sync_direction(server) in (
+		ITEM_SYNC_BIDIRECTIONAL,
+		ITEM_SYNC_ERP_NEXT_TO_WOOCOMMERCE,
+	)
+
+
+def item_sync_allows_inbound(server) -> bool:
+	return get_item_sync_direction(server) in (
+		ITEM_SYNC_BIDIRECTIONAL,
+		ITEM_SYNC_WOOCOMMERCE_TO_ERP_NEXT,
+	)
+
+
+def _raise_direction_error(server, attempted_direction: str) -> None:
+	direction = get_item_sync_direction(server)
+	raise SyncDirectionError(
+		_(
+			"{0} synchronisation is disabled for WooCommerce Server {1}. Item Synchronisation Direction is set to {2}."
+		).format(attempted_direction, server.name, direction)
+	)
+
 
 def run_item_sync_from_hook(doc, method):
 	"""
@@ -44,7 +76,8 @@ def run_item_sync_from_hook(doc, method):
 		and not doc.flags.get("created_by_sync", None)
 		and len(doc.woocommerce_servers) > 0
 		and any(
-			frappe.get_cached_doc("WooCommerce Server", row.woocommerce_server).enable_sync
+			(server := frappe.get_cached_doc("WooCommerce Server", row.woocommerce_server)).enable_sync
+			and item_sync_allows_outbound(server)
 			for row in doc.woocommerce_servers
 			if row.woocommerce_server
 		)
@@ -68,6 +101,7 @@ def run_item_sync(
 	woocommerce_product_name: str | None = None,
 	woocommerce_product: WooCommerceProduct | None = None,
 	enqueue: bool = False,
+	raise_on_no_outbound: bool = True,
 ) -> tuple[Item, WooCommerceProduct]:
 	"""
 	Helper funtion that prepares arguments for item sync
@@ -101,7 +135,20 @@ def run_item_sync(
 			item = frappe.get_doc("Item", item_code)
 		if not item.woocommerce_servers:
 			frappe.throw(_("No WooCommerce Servers defined for Item {0}").format(item_code))
+		eligible_servers = []
 		for wc_server in item.woocommerce_servers:
+			server = frappe.get_cached_doc("WooCommerce Server", wc_server.woocommerce_server)
+			if not item_sync_allows_outbound(server):
+				continue
+			eligible_servers.append(wc_server)
+		if not eligible_servers:
+			if raise_on_no_outbound:
+				server = frappe.get_cached_doc(
+					"WooCommerce Server", item.woocommerce_servers[0].woocommerce_server
+				)
+				_raise_direction_error(server, _("Outbound Item"))
+			return None, None
+		for wc_server in eligible_servers:
 			# Trigger sync for every linked server
 			SyncClass = get_item_sync_class(wc_server.woocommerce_server)
 			sync = SyncClass(item=ERPNextItemToSync(item=item, item_woocommerce_server_idx=wc_server.idx))
@@ -110,10 +157,7 @@ def run_item_sync(
 			else:
 				sync.run()
 
-	return (
-		sync.item.item if sync and sync.item else None,
-		sync.woocommerce_product if sync else None,
-	)
+	return (sync.item.item if sync and sync.item else None, sync.woocommerce_product if sync else None)
 
 
 def sync_woocommerce_products_modified_since(date_time_from=None):
@@ -136,7 +180,16 @@ def sync_woocommerce_products_modified_since(date_time_from=None):
 		)
 		raise ValueError(error_text)
 
-	wc_products = get_list_of_wc_products(date_time_from=date_time_from)
+	inbound_servers = [
+		server_name
+		for server_name in frappe.get_all("WooCommerce Server", filters={"enable_sync": 1}, pluck="name")
+		if item_sync_allows_inbound(frappe.get_cached_doc("WooCommerce Server", server_name))
+	]
+	if not inbound_servers:
+		frappe.db.set_single_value("WooCommerce Integration Settings", "wc_last_sync_date_items", now())
+		return
+
+	wc_products = get_list_of_wc_products(date_time_from=date_time_from, servers=inbound_servers)
 	for wc_product in wc_products:
 		try:
 			server = frappe.get_cached_doc("WooCommerce Server", wc_product.woocommerce_server)
@@ -275,6 +328,7 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		super().__init__(servers)
 		self.item = item
 		self.woocommerce_product = woocommerce_product
+		self.sync_from_item = item is not None
 		self.settings = frappe.get_cached_doc("WooCommerce Integration Settings")
 
 	def run(self):
@@ -282,6 +336,7 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		Run synchronisation
 		"""
 		try:
+			self.validate_sync_direction()
 			self.get_corresponding_item_or_product()
 			self.sync_wc_product_with_erpnext_item()
 		except Exception as err:
@@ -296,6 +351,18 @@ class SynchroniseItem(SynchroniseWooCommerce):
 			error_message = f"{frappe.get_traceback()}\n\nItem Data: \n{str(self.item) if self.item else ''}\n\nWC Product Data \n{str(woocommerce_product_dict) if self.woocommerce_product else ''})"
 			frappe.log_error("WooCommerce Error", error_message)
 			raise err
+
+	def validate_sync_direction(self):
+		if self.sync_from_item:
+			server = frappe.get_cached_doc(
+				"WooCommerce Server", self.item.item_woocommerce_server.woocommerce_server
+			)
+			if not item_sync_allows_outbound(server):
+				_raise_direction_error(server, _("Outbound Item"))
+		elif self.woocommerce_product:
+			server = frappe.get_cached_doc("WooCommerce Server", self.woocommerce_product.woocommerce_server)
+			if not item_sync_allows_inbound(server):
+				_raise_direction_error(server, _("Inbound Item"))
 
 	def get_corresponding_item_or_product(self):
 		"""
@@ -441,8 +508,15 @@ class SynchroniseItem(SynchroniseWooCommerce):
 			# create missing item in ERPNext
 			self.create_item(self.woocommerce_product)
 		elif self.item and self.woocommerce_product:
-			# both exist, check sync hash
-			if (
+			server = frappe.get_cached_doc(
+				"WooCommerce Server", self.item.item_woocommerce_server.woocommerce_server
+			)
+			direction = get_item_sync_direction(server)
+			if direction == ITEM_SYNC_ERP_NEXT_TO_WOOCOMMERCE:
+				self.update_woocommerce_product(self.woocommerce_product, self.item)
+			elif direction == ITEM_SYNC_WOOCOMMERCE_TO_ERP_NEXT:
+				self.update_item(self.woocommerce_product, self.item)
+			elif (
 				self.woocommerce_product.woocommerce_date_modified
 				!= self.item.item_woocommerce_server.woocommerce_last_sync_hash
 			):
@@ -932,7 +1006,9 @@ class SynchroniseItem(SynchroniseWooCommerce):
 
 
 def get_list_of_wc_products(
-	item: ERPNextItemToSync | None = None, date_time_from: datetime | None = None
+	item: ERPNextItemToSync | None = None,
+	date_time_from: datetime | None = None,
+	servers: list[str] | None = None,
 ) -> list[WooCommerceProduct]:
 	"""
 	Fetches a list of WooCommerce Products within a specified date range or linked with an Item, using pagination.
@@ -948,14 +1024,14 @@ def get_list_of_wc_products(
 	start = 0
 	filters = []
 	wc_products = []
-	servers = None
+	server_filter = servers
 
 	# Build filters
 	if date_time_from:
 		filters.append(["WooCommerce Product", "date_modified", ">", date_time_from])
 	if item:
 		filters.append(["WooCommerce Product", "id", "=", item.item_woocommerce_server.woocommerce_id])
-		servers = [item.item_woocommerce_server.woocommerce_server]
+		server_filter = [item.item_woocommerce_server.woocommerce_server]
 
 	while new_results:
 		woocommerce_product = frappe.get_doc({"doctype": "WooCommerce Product"})
@@ -964,7 +1040,7 @@ def get_list_of_wc_products(
 				"filters": filters,
 				"page_length": page_length,
 				"start": start,
-				"servers": servers,
+				"servers": server_filter,
 				"as_doc": True,
 			}
 		)
@@ -1052,11 +1128,18 @@ def clear_sync_hash(item_code: str) -> int:
 	"""
 	iws = frappe.qb.DocType("Item WooCommerce Server")
 
-	iwss = (frappe.qb.from_(iws).where(iws.enabled == 1).where(iws.parent == item_code).select(iws.name)).run(
-		as_dict=True
-	)
+	iwss = (
+		frappe.qb.from_(iws)
+		.where(iws.enabled == 1)
+		.where(iws.parent == item_code)
+		.select(iws.name, iws.woocommerce_server)
+	).run(as_dict=True)
 
+	cleared = 0
 	for iws in iwss:
+		server = frappe.get_cached_doc("WooCommerce Server", iws.woocommerce_server)
+		if not item_sync_allows_outbound(server):
+			continue
 		frappe.db.set_value(
 			"Item WooCommerce Server",
 			iws.name,
@@ -1064,10 +1147,11 @@ def clear_sync_hash(item_code: str) -> int:
 			None,
 			update_modified=False,
 		)
+		cleared += 1
 
-	return len(iwss)
+	return cleared
 
 
 def clear_sync_hash_and_run_item_sync(item_code: str):
 	if clear_sync_hash(item_code) > 0:
-		run_item_sync(item_code=item_code, enqueue=True)
+		run_item_sync(item_code=item_code, enqueue=True, raise_on_no_outbound=False)

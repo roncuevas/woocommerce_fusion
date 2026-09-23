@@ -7,6 +7,10 @@ from frappe.tests import IntegrationTestCase
 
 from woocommerce_fusion.tasks.batch.batch_processor import BatchProcessor
 from woocommerce_fusion.tasks.batch.queue_manager import flush_pending, should_flush
+from woocommerce_fusion.tasks.sync_items import (
+	ITEM_SYNC_ERP_NEXT_TO_WOOCOMMERCE,
+	ITEM_SYNC_WOOCOMMERCE_TO_ERP_NEXT,
+)
 from woocommerce_fusion.woocommerce.doctype.woocommerce_sync_queue.woocommerce_sync_queue import (
 	enqueue_item,
 	enqueue_order,
@@ -202,6 +206,53 @@ class TestBatchProcessor(IntegrationTestCase):
 				[_dict({"sync_type": "item", "direction": "outbound"})], "product", None, "manual"
 			)
 			m_out.assert_called_once()
+
+	def test_forbidden_item_direction_marks_pending_row_skipped(self):
+		processor = BatchProcessor(self.server)
+		processor.server.item_sync_direction = ITEM_SYNC_WOOCOMMERCE_TO_ERP_NEXT
+		row = self._make_queue_row(reference_name="UNIT-DIRECTION-OUT", direction="outbound")
+
+		success, failed = processor.process_chunk([row], "product", None, "manual")
+
+		self.assertEqual((success, failed), (1, 0))
+		self.assertEqual(frappe.db.get_value("WooCommerce Sync Queue", row.name, "status"), "Skipped")
+		self.assertIn(
+			"WooCommerce to ERPNext",
+			frappe.db.get_value("WooCommerce Sync Queue", row.name, "error_message"),
+		)
+		processor.server.item_sync_direction = "Bidirectional"
+
+	def test_allowed_item_direction_does_not_skip_stock_queue(self):
+		processor = BatchProcessor(self.server)
+		processor.server.item_sync_direction = ITEM_SYNC_WOOCOMMERCE_TO_ERP_NEXT
+		row = self._make_queue_row(
+			sync_type="stock",
+			reference_name="UNIT-DIRECTION-STOCK",
+			direction="outbound",
+			woocommerce_id="88",
+			extra_data=json.dumps({"stock_quantity": 5}),
+		)
+		with patch.object(processor, "_execute_product_batch", return_value=(1, 0)) as execute:
+			result = processor.process_chunk([row], "product", None, "manual")
+
+		self.assertEqual(result, (1, 0))
+		execute.assert_called_once()
+
+	def test_allowed_item_direction_does_not_skip_item_price_queue(self):
+		processor = BatchProcessor(self.server)
+		processor.server.item_sync_direction = ITEM_SYNC_WOOCOMMERCE_TO_ERP_NEXT
+		row = self._make_queue_row(
+			sync_type="item_price",
+			reference_name="UNIT-DIRECTION-PRICE",
+			direction="outbound",
+			woocommerce_id="89",
+			extra_data=json.dumps({"regular_price": "10.00"}),
+		)
+		with patch.object(processor, "_execute_product_batch", return_value=(1, 0)) as execute:
+			result = processor.process_chunk([row], "product", None, "manual")
+
+		self.assertEqual(result, (1, 0))
+		execute.assert_called_once()
 
 	@patch("frappe.db.commit")
 	@patch(

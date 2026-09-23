@@ -11,11 +11,17 @@ from frappe.utils.data import cstr, now
 from jsonpath_ng.ext import parse
 
 from woocommerce_fusion.exceptions import (
+	SyncDirectionError,
 	SyncDisabledError,
 	WooCommerceOrderNotFoundError,
 )
 from woocommerce_fusion.tasks.sync import SynchroniseWooCommerce
-from woocommerce_fusion.tasks.sync_items import create_filtered_jsonpath_target, run_item_sync
+from woocommerce_fusion.tasks.sync_items import (
+	create_filtered_jsonpath_target,
+	get_item_sync_direction,
+	item_sync_allows_inbound,
+	run_item_sync,
+)
 from woocommerce_fusion.woocommerce.doctype.woocommerce_order.woocommerce_order import (
 	WC_ORDER_STATUS_MAPPING,
 	WC_ORDER_STATUS_MAPPING_REVERSE,
@@ -721,6 +727,19 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 			# Deleted items will have a "0" for variation_id/product_id
 			if item_woo_com_id != "0":
+				server = frappe.get_cached_doc("WooCommerce Server", woocommerce_site)
+				if not item_sync_allows_inbound(server):
+					raise SyncDirectionError(
+						_(
+							"WooCommerce Product {0} has no linked ERPNext Item, and inbound Item creation is disabled "
+							"because Item Synchronisation Direction is {1} on WooCommerce Server {2}. Create or link the "
+							"Item in ERPNext first."
+						).format(
+							item_woo_com_id,
+							get_item_sync_direction(server),
+							server.name,
+						)
+					)
 				woocommerce_product_name = generate_woocommerce_record_name_from_domain_and_id(
 					woocommerce_site, item_woo_com_id
 				)

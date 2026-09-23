@@ -24,6 +24,26 @@ Every hour, a background task runs that performs the following steps:
 1. Retrieve a list of **WooCommerce Products** that have been modified since the *Last Syncronisation Date* (on **WooCommerce Integration Settings**) 
 2. Compare each **WooCommerce Product** with its ERPNext **Item** counterpart, creating an **Item** if it doesn't exist or updating the relevant **Item**
 
+## Item Synchronisation Direction
+
+The **Item Synchronisation Direction** setting on **WooCommerce Server** controls which system is authoritative for Item/Product master data:
+
+| Mode | ERPNext → WooCommerce | WooCommerce → ERPNext |
+| --- | --- | --- |
+| Bidirectional | Yes | Yes |
+| ERPNext to WooCommerce | Yes | No |
+| WooCommerce to ERPNext | No | Yes |
+
+The default is **Bidirectional**, which preserves the timestamp-based behaviour. Existing servers with an empty value are also treated as Bidirectional; no migration patch is required.
+
+In **ERPNext to WooCommerce** mode, ERPNext Items can create or update Products. WooCommerce Products cannot update or create ERPNext Items. In **WooCommerce to ERPNext** mode, the inverse applies. Creation follows the same direction rules as updates.
+
+The setting applies to Item master data, including names, SKU relationships, attributes, variants, images and custom Item field mappings. Stock and price synchronisation remain independent and keep their existing directions. Sales Orders continue to import from WooCommerce; in ERPNext-to-WooCommerce mode, every Product on an imported order must already be linked to an ERPNext Item.
+
+Scheduled WooCommerce-to-ERPNext imports only query servers that permit inbound Item synchronisation. Changing the direction does not retroactively import WooCommerce changes made while inbound synchronisation was disabled.
+
+**Match Items by SKU** continues to link an inbound Product to an existing ERPNext Item when inbound synchronisation is enabled and exactly one Item Code matches. It does not link or modify Items in ERPNext-to-WooCommerce mode.
+
 ## Synchronisation Logic
 When comparing a **WooCommerce Item** with it's counterpart ERPNext **Item**, the `date_modified` field on **WooCommerce Item** is compared with the `modified` field of ERPNext **Item**. The last modified document will be used as master when syncronising
 
@@ -83,4 +103,3 @@ On its own, a mapping row copies a value straight across - it does no reshaping.
 - Any errors during this process can be found under **Error Log**.
 - You can also check the **Scheduled Job Log** for the `sync_items.run_items_sync` Scheduled Job.
 - A history of all API calls made to your Wordpress Site can be found under **WooCommerce Request Log** (*Enable WooCommerce Request Logs* needs to be turned on on **WooCommerce Server** > *Logs*)
-

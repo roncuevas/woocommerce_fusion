@@ -73,6 +73,7 @@
   "tax_account_for_order_fee_lines",
   "tab_items",
   "item_section",
+  "item_sync_direction",
   "name_by",
   "match_items_by_sku",
   "enable_image_sync",
@@ -391,6 +392,15 @@
    "fieldname": "tab_items",
    "fieldtype": "Tab Break",
    "label": "Items"
+  },
+  {
+   "default": "Bidirectional",
+   "description": "Controls the direction of Item/Product master-data synchronisation. This setting does not affect stock, price, or Sales Order synchronisation.",
+   "fieldname": "item_sync_direction",
+   "fieldtype": "Select",
+   "label": "Item Synchronisation Direction",
+   "options": "Bidirectional\nERPNext to WooCommerce\nWooCommerce to ERPNext",
+   "reqd": 1
   },
   {
    "depends_on": "eval: doc.enable_sync",

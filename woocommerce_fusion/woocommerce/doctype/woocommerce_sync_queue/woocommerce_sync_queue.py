@@ -4,7 +4,15 @@
 import json
 
 import frappe
+from frappe import _
 from frappe.model.document import Document
+
+from woocommerce_fusion.exceptions import SyncDirectionError
+from woocommerce_fusion.tasks.sync_items import (
+	get_item_sync_direction,
+	item_sync_allows_inbound,
+	item_sync_allows_outbound,
+)
 
 
 class WooCommerceSyncQueue(Document):
@@ -77,6 +85,18 @@ def enqueue_item(
 	row already exists for this combination, it is marked "Superseded" before inserting the new
 	row. This preserves full history - each enqueue event gets its own row.
 	"""
+	if sync_type == "item":
+		server = frappe.get_cached_doc("WooCommerce Server", woocommerce_server)
+		allowed = (
+			item_sync_allows_outbound(server) if direction == "outbound" else item_sync_allows_inbound(server)
+		)
+		if not allowed:
+			direction_label = "Outbound Item" if direction == "outbound" else "Inbound Item"
+			raise SyncDirectionError(
+				_(
+					"{0} synchronisation is disabled for WooCommerce Server {1}. Item Synchronisation Direction is set to {2}."
+				).format(direction_label, server.name, get_item_sync_direction(server))
+			)
 	_supersede_pending(
 		woocommerce_server,
 		sync_type,

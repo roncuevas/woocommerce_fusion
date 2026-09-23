@@ -3,8 +3,9 @@ from unittest.mock import Mock, call, patch
 
 import frappe
 from erpnext import get_default_company
-from frappe.tests import IntegrationTestCase
+from frappe.tests import IntegrationTestCase, UnitTestCase
 
+from woocommerce_fusion.exceptions import SyncDirectionError
 from woocommerce_fusion.tasks.sync_sales_orders import (
 	SynchroniseSalesOrder,
 	encode_line_item_meta_display_values,
@@ -20,6 +21,24 @@ from woocommerce_fusion.woocommerce.woocommerce_api import (
 default_company = get_default_company()
 default_bank = "Test Bank"
 default_bank_account = "Checking Account"
+
+
+class TestSalesOrderItemDirection(UnitTestCase):
+	@patch("woocommerce_fusion.tasks.sync_sales_orders.frappe.get_cached_doc")
+	def test_missing_item_fails_clearly_when_inbound_item_creation_is_disabled(self, mock_get_cached_doc):
+		mock_get_cached_doc.return_value = frappe._dict(
+			name="erp-master.example.com",
+			item_sync_direction="ERPNext to WooCommerce",
+		)
+		sync = SynchroniseSalesOrder.__new__(SynchroniseSalesOrder)
+
+		with self.assertRaises(SyncDirectionError) as error:
+			sync.create_missing_items(
+				frappe._dict(), [{"product_id": 123, "variation_id": 0}], "erp-master.example.com"
+			)
+
+		self.assertIn("WooCommerce Product 123", str(error.exception))
+		self.assertIn("Create or link the Item in ERPNext first", str(error.exception))
 
 
 @patch("woocommerce_fusion.tasks.sync_sales_orders.frappe.get_cached_doc")

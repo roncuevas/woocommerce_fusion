@@ -1,6 +1,7 @@
 import frappe
 
-from woocommerce_fusion.tasks.sync_items import ERPNextItemToSync, SynchroniseItem
+from woocommerce_fusion.exceptions import SyncDirectionError
+from woocommerce_fusion.tasks.sync_items import ERPNextItemToSync, SynchroniseItem, item_sync_allows_outbound
 from woocommerce_fusion.woocommerce.doctype.woocommerce_sync_queue.woocommerce_sync_queue import (
 	enqueue_item,
 )
@@ -17,6 +18,13 @@ class SynchroniseItemBatch(SynchroniseItem):
 	defer_sync_hash: bool = True
 
 	def _send_create(self, item: ERPNextItemToSync) -> None:
+		server = frappe.get_cached_doc("WooCommerce Server", item.item_woocommerce_server.woocommerce_server)
+		if not item_sync_allows_outbound(server):
+			raise SyncDirectionError(
+				frappe._("Outbound Item synchronisation is disabled for WooCommerce Server {0}.").format(
+					server.name
+				)
+			)
 		enqueue_item(
 			woocommerce_server=item.item_woocommerce_server.woocommerce_server,
 			item_code=item.item.name,
@@ -30,6 +38,13 @@ class SynchroniseItemBatch(SynchroniseItem):
 		)
 
 	def _send_update(self, item: ERPNextItemToSync) -> None:
+		server = frappe.get_cached_doc("WooCommerce Server", item.item_woocommerce_server.woocommerce_server)
+		if not item_sync_allows_outbound(server):
+			raise SyncDirectionError(
+				frappe._("Outbound Item synchronisation is disabled for WooCommerce Server {0}.").format(
+					server.name
+				)
+			)
 		enqueue_item(
 			woocommerce_server=item.item_woocommerce_server.woocommerce_server,
 			item_code=item.item.name,
